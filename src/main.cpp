@@ -1,68 +1,73 @@
 #include <Arduino.h>
-#include <avr/pgmspace.h>
+
+#include <SoftwareSerial.h>
 
 #include "Adafruit_FONA.h"
-#include <SoftwareSerial.h>
 
 #define FONA_RX 2
 #define FONA_TX 3
 #define FONA_RST 4
+#define OK_LED 8
 
-const uint8_t MAX_LENGHT_MSG = 250;
-const uint8_t FONE_DIGITS = 15;
+const uint8_t MAX_LENGHT_MSG = 70;
+const uint8_t PHONE_DIGITS = 15;
 
 typedef struct gpsData
 {
-  float latitude;
-  float longitude;
+  float latitude = 0;
+  float longitude = 0;
 } GPSData;
 
 typedef struct message
 {
   int8_t index = 0;
-  char number[FONE_DIGITS] = {0};
+  char number[PHONE_DIGITS] = {0};
   char text[MAX_LENGHT_MSG] = {0};
-  uint16_t *lenght;
+  uint16_t *lenght = NULL;
 } Message;
 
-GPSData *getGPSData(GPSData *loc);
 void deleteAllSMS();
 bool getSMS(Message *receivedSMS);
 void sendActualLocation(char *sendTo);
-void activeTracking(bool tracking, char *sendTo, uint8_t trackingDelayMin);
-int freeRam();
 
 SoftwareSerial fonaSS = SoftwareSerial(FONA_TX, FONA_RX);
 SoftwareSerial *fonaSerial = &fonaSS;
 
 Adafruit_FONA fona = Adafruit_FONA(FONA_RST);
-GPSData *location = (GPSData *)malloc(sizeof(GPSData));
-Message *msg = (Message *)malloc(sizeof(Message));
 
-const char mainMenu[] PROGMEM = "Ola.\nResponda com a opcao:\n(1)Ativar/Desativar GPS.\n(2)Localizar.\n(>=3)Configurar tempo.\n(0)Cancelar. \n";
-const char msgError[] PROGMEM = "Erro na tentativa.\n";
-//const char foneNumber[] PROGMEM = "+5541996070984";
-const char foneNumber[] PROGMEM = "+5541991940319";
-const char linkGmaps[] PROGMEM = "Latitude: %s\nLongitude: %s\nhttp://maps.google.com/maps?q=%s,%s\n";
+GPSData location;
+Message msg;
 
-bool onMenu = false;
-bool responseSMS = false;
-bool tracking = false;
-uint8_t trackingDelayMin = 1;
+char phoneOwner[] = "+5541991940319";
+char linkGmaps[] = "Latitude: %s\nLongitude: %s\nhttp://maps.google.com/maps?q=%s,%s\n";
+char mainMenu[] = "[R]Ativar/Desativar GPS\n[L]Localizar.\n[T(1~9)]Configurar tempo\n";
+
 char txtBuffer[MAX_LENGHT_MSG];
+char phoneBuffer[PHONE_DIGITS];
+
+const uint16_t oneMinInMillis = 60000;
+unsigned long previousMillis = 0;
+unsigned long currentMillis = 0;
+uint8_t trackingDelayMin = 1;
+
+bool delayTrigger = false;
+bool getTrigger = false;
+bool smsTrigger = false;
+bool onMenu = false;
+bool tracking = false;
 
 void setup()
 {
-  while (!Serial)
-    ;
-  Serial.begin(115200);
-  Serial.print(F("Rastreador"));
+  Serial.begin(9600);
+  Serial.println(F("Rastreador"));
   Serial.println(F("Iniciando..(Pode levar alguns segundos)"));
 
   fonaSerial->begin(4800);
   if (!fona.begin(*fonaSerial))
   {
     Serial.println(F("SIM808 não localizado"));
+    while (1)
+      ;
   }
 
   Serial.println(F("SIM808 OK"));
@@ -70,24 +75,12 @@ void setup()
 
   fona.enableGPS(true);
 
-  if (!(msg || location))
+  // Solicitando dados gps e passando para variavel location
+  while (!fona.getGPS(&(location.latitude), &(location.longitude)))
   {
-    Serial.println(F("Variaveis não alocadas"));
-    while (1)
-      ;
-  }
-
-  location = getGPSData(location);
-
-  // Print SIM card IMEI number.
-  char imei[16] = {0};
-  uint8_t imeiLen = fona.getIMEI(imei);
-
-  if (imeiLen > 0)
-  {
-    Serial.print(F("SIM card IMEI: "));
-    Serial.println(imei);
-  }
+    Serial.print(F("Aguardando sinal dos satélites...\n"));
+    delay(10000);
+  };
 
   deleteAllSMS();
 
@@ -95,68 +88,48 @@ void setup()
   fonaSerial->print("AT+CNMI=2,1\r\n");
 
   Serial.println(F("Setup Finalizado."));
+
+  pinMode(OK_LED, OUTPUT);
+  digitalWrite(OK_LED, HIGH);
 }
 
 void loop()
 {
-  onMenu = getSMS(msg);
+  currentMillis = millis();
+  if (currentMillis - previousMillis >= (trackingDelayMin * oneMinInMillis))
+  {
+    delayTrigger = true;
+    previousMillis = currentMillis;
+  }
+
+  onMenu = getSMS(&msg);
+
   while (onMenu)
   {
-    if (strcmp_P(msg->number, foneNumber) != 0)
-    {
-      memcpy_P(txtBuffer, msgError, sizeof(msgError));
-
-      onMenu = false;
-      Serial.print(msg->number);
-
-      memcpy_P(msg->number, foneNumber, sizeof(foneNumber));
-
-      fona.sendSMS(msg->number, txtBuffer);
-      deleteAllSMS();
-      break;
-    }
+    if (msg.text[0] == 'R')
+      getTrigger = !getTrigger;
+    else if (msg.text[0] == 'L')
+      smsTrigger = true;
+    else if (msg.text[0] == 'T')
+      trackingDelayMin = msg.text[2] - '0';
     else
-    {
-      memcpy_P(txtBuffer, mainMenu, sizeof(mainMenu));
-
-      fona.sendSMS(msg->number, txtBuffer);
-
-      while (!responseSMS)
-      {
-        responseSMS = getSMS(msg);
-
-        if (msg->text[0] == '1')
-          tracking = !tracking;
-        else if (msg->text[0] == '2')
-          sendActualLocation(msg->number);
-        else if (msg->text[0] >= '3')
-          trackingDelayMin = msg->text[0] - '0';
-        else if (msg->text[0] == '0')
-          onMenu = false;
-        else
-          responseSMS = false;
-      }
-    }
+      fona.sendSMS(phoneOwner, mainMenu);
+    onMenu = false;
+    deleteAllSMS();
   }
-  activeTracking(tracking, msg->number, trackingDelayMin);
-  deleteAllSMS();
-  Serial.print(F("Esperando SMS.\n"));
-  Serial.println(freeRam());
-  delay(1000);
-};
 
-GPSData *getGPSData(GPSData *loc)
-{
-  bool gps_success = fona.getGPS(&loc->latitude, &loc->longitude);
-  Serial.println(freeRam());
-  while (!gps_success)
+  Serial.println(currentMillis);
+  Serial.println(delayTrigger);
+  Serial.println(getTrigger);
+
+  if ((delayTrigger && getTrigger) || smsTrigger)
   {
-    Serial.println(freeRam());
-    Serial.print(F("Aguardando sinal dos satélites...\n"));
-    gps_success = fona.getGPS(&loc->latitude, &loc->longitude);
-    delay(10000);
+    sendActualLocation(phoneOwner);
+    delayTrigger = false;
+    smsTrigger = false;
   }
-  return loc;
+
+  delay(1000);
 }
 
 void deleteAllSMS()
@@ -166,20 +139,16 @@ void deleteAllSMS()
     fona.deleteSMS(count);
 }
 
-bool getSMS(Message *recivedSMS)
+bool getSMS(Message *sms)
 {
+  sms->index = fona.getNumSMS();
 
-  bool readMsg = false;
-  recivedSMS->index = fona.getNumSMS();
-  if (recivedSMS->index > 0)
+  if (sms->index > 0)
   {
-    fona.getSMSSender(recivedSMS->index, recivedSMS->number, MAX_LENGHT_MSG);
-    readMsg = fona.readSMS(recivedSMS->index, recivedSMS->text, MAX_LENGHT_MSG, recivedSMS->lenght);
-    fona.deleteSMS(recivedSMS->index);
-    Serial.println(readMsg);
+    fona.getSMSSender(sms->index, sms->number, MAX_LENGHT_MSG);
+    return fona.readSMS(sms->index, sms->text, MAX_LENGHT_MSG, sms->lenght);
   }
-
-  return readMsg;
+  return false;
 }
 
 void sendActualLocation(char *sendTo)
@@ -187,31 +156,19 @@ void sendActualLocation(char *sendTo)
   char lat[12];
   char lon[12];
 
-  location = getGPSData(location);
-
-  dtostrf(location->latitude, 8, 6, lat);
-  dtostrf(location->longitude, 8, 6, lon);
-
-  memcpy_P(txtBuffer, linkGmaps, sizeof(linkGmaps));
-  sprintf(txtBuffer, txtBuffer, lat, lon, lat, lon);
-
-  //Serial.println(txtBuffer);
-
-  fona.sendSMS(sendTo, txtBuffer);
-}
-
-void activeTracking(bool tracking, char *sendTo, uint8_t trackingDelayMin)
-{
-  if (tracking)
+  // Solicitando dados gps e passando para variavel location
+  while (!fona.getGPS(&(location.latitude), &(location.longitude)))
   {
-    sendActualLocation(sendTo);
-    delay(trackingDelayMin * 60000);
-  }
-}
+    Serial.println(F("Aguardando satelites..."));
+    delay(1000);
+  };
+  //tranformando as variaveis float em char*
+  dtostrf(location.latitude, 8, 6, lat);
+  dtostrf(location.longitude, 8, 6, lon);
 
-int freeRam()
-{
-  extern int __heap_start, *__brkval;
-  int v;
-  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+  //concatenando dados no buffer de texto
+  sprintf(txtBuffer, linkGmaps, lat, lon, lat, lon);
+
+  //Solicitando Envio
+  fona.sendSMS(sendTo, txtBuffer);
 }
