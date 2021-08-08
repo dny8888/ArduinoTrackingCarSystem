@@ -1,6 +1,6 @@
 #include <Arduino.h>
-
 #include <SoftwareSerial.h>
+#include <Wire.h>
 
 #include "Adafruit_FONA.h"
 
@@ -8,6 +8,9 @@
 #define FONA_TX 3
 #define FONA_RST 4
 #define OK_LED 8
+
+// Endereco I2C do sensor MPU-6050
+const int MPU = 0x68;
 
 const uint8_t MAX_LENGHT_MSG = 70;
 const uint8_t PHONE_DIGITS = 15;
@@ -29,6 +32,7 @@ typedef struct message
 void deleteAllSMS();
 bool getSMS(Message *receivedSMS);
 void sendActualLocation(char *sendTo);
+bool getAccMove();
 
 SoftwareSerial fonaSS = SoftwareSerial(FONA_TX, FONA_RX);
 SoftwareSerial *fonaSerial = &fonaSS;
@@ -40,7 +44,7 @@ Message msg;
 
 char phoneOwner[] = "+5541991940319";
 char linkGmaps[] = "Latitude: %s\nLongitude: %s\nhttp://maps.google.com/maps?q=%s,%s\n";
-char mainMenu[] = "[R]Ativar/Desativar GPS\n[L]Localizar.\n[T(1~9)]Configurar tempo\n";
+char mainMenu[] = "[R]Ativar/Desativar GPS\n[L]Localizar.\n[T(1~9)]Configurar tempo.Ex:T8\n";
 
 char txtBuffer[MAX_LENGHT_MSG];
 char phoneBuffer[PHONE_DIGITS];
@@ -50,11 +54,10 @@ unsigned long previousMillis = 0;
 unsigned long currentMillis = 0;
 uint8_t trackingDelayMin = 1;
 
-bool delayTrigger = false;
-bool getTrigger = false;
-bool smsTrigger = false;
-bool onMenu = false;
-bool tracking = false;
+bool delayTrigger = 1;
+bool getTrigger = 0;
+bool smsTrigger = 0;
+bool accTrigger = 0;
 
 void setup()
 {
@@ -89,6 +92,24 @@ void setup()
 
   Serial.println(F("Setup Finalizado."));
 
+  // Inicializa o MPU-6050
+  Wire.begin();
+  Wire.beginTransmission(MPU);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+  // Configura Acelerometro para fundo de escala desejado
+  //
+  //      Wire.write(0b00000000); // fundo de escala em +/-2g
+  //      Wire.write(0b00001000); // fundo de escala em +/-4g
+  //      Wire.write(0b00010000); // fundo de escala em +/-8g
+  //      Wire.write(0b00011000); // fundo de escala em +/-16g
+  //
+  Wire.beginTransmission(MPU);
+  Wire.write(0x1C);
+  Wire.write(0b00011000); // Trocar esse comando para fundo de escala desejado conforme acima
+  Wire.endTransmission();
+
   pinMode(OK_LED, OUTPUT);
   digitalWrite(OK_LED, HIGH);
 }
@@ -96,38 +117,67 @@ void setup()
 void loop()
 {
   currentMillis = millis();
+
+  //Verifica se passou intervalo.
   if (currentMillis - previousMillis >= (trackingDelayMin * oneMinInMillis))
   {
-    delayTrigger = true;
+    delayTrigger = 1;
     previousMillis = currentMillis;
   }
 
-  onMenu = getSMS(&msg);
-
-  while (onMenu)
+  //Verifica se recebeu mensagem.
+  if (getSMS(&msg))
   {
     if (msg.text[0] == 'R')
-      getTrigger = !getTrigger;
+      getTrigger = getTrigger == 0 ? 1 : 0;
     else if (msg.text[0] == 'L')
-      smsTrigger = true;
+      smsTrigger = 1;
     else if (msg.text[0] == 'T')
-      trackingDelayMin = msg.text[2] - '0';
+      //pega o 2º caracter e converte em um inteiro
+      trackingDelayMin = msg.text[1] - '0';
     else
       fona.sendSMS(phoneOwner, mainMenu);
-    onMenu = false;
     deleteAllSMS();
   }
 
-  Serial.println(currentMillis);
-  Serial.println(delayTrigger);
-  Serial.println(getTrigger);
+  //Verifica se houve movimentação
+  if (getAccMove())
+  {
+    accTrigger = 1;
+  }
 
-  if ((delayTrigger && getTrigger) || smsTrigger)
+  Serial.print(F("delayTrigger:"));
+  Serial.println(delayTrigger ? "TRUE" : "FALSE");
+  Serial.print(F("getTrigger:"));
+  Serial.println(getTrigger ? "TRUE" : "FALSE");
+  Serial.print(F("smsTrigger:"));
+  Serial.println(smsTrigger ? "TRUE" : "FALSE");
+  Serial.print(F("accTrigger:"));
+  Serial.println(accTrigger ? "TRUE" : "FALSE");
+  Serial.print(F("trackingDelayMin:"));
+  Serial.println(trackingDelayMin);
+
+  //Envia localização se rastreamento está ativo E passou o intervalo
+  if (delayTrigger && getTrigger)
   {
     sendActualLocation(phoneOwner);
-    delayTrigger = false;
-    smsTrigger = false;
-  }
+    delayTrigger = 0;
+  };
+
+  //Envia localização se rastreamento está ativo E houve movimentação
+  if (getTrigger && accTrigger)
+  {
+    sendActualLocation(phoneOwner);
+    accTrigger = 0;
+    trackingDelayMin = 1;
+  };
+
+  // Envia localização se solicitado por mensagem.
+  if (smsTrigger)
+  {
+    sendActualLocation(phoneOwner);
+    smsTrigger = 0;
+  };
 
   delay(1000);
 }
@@ -171,4 +221,34 @@ void sendActualLocation(char *sendTo)
 
   //Solicitando Envio
   fona.sendSMS(sendTo, txtBuffer);
+}
+
+bool getAccMove()
+{
+  float AccX, AccY, AccZ, accVector;
+
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 14, true); // Solicita os dados ao sensor
+
+  // Armazena o valor dos sensores nas variaveis correspondentes
+  AccX = Wire.read() << 8 | Wire.read(); //0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
+  AccY = Wire.read() << 8 | Wire.read(); //0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
+  AccZ = Wire.read() << 8 | Wire.read(); //0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
+
+  AccX /= 2048;
+  AccY /= 2048;
+  AccZ /= 2048;
+  accVector = sqrt(AccX * AccX + AccY * AccY + AccZ * AccZ);
+
+  return accVector > 2 ? 1 : 0;
+  // Imprime na Serial os valores obtidos
+  /* Alterar divisão conforme fundo de escala escolhido:
+      Acelerômetro
+      +/-2g = 16384
+      +/-4g = 8192
+      +/-8g = 4096
+      +/-16g = 2048
+*/
 }
