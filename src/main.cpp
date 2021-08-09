@@ -4,9 +4,12 @@
 
 #include "Adafruit_FONA.h"
 
+// Pinos de comunicação do sim808
 #define FONA_RX 2
 #define FONA_TX 3
 #define FONA_RST 4
+
+// Led para verificar se finalizou o setup.
 #define OK_LED 8
 
 // Endereco I2C do sensor MPU-6050
@@ -29,31 +32,36 @@ typedef struct message
   uint16_t *lenght = NULL;
 } Message;
 
+//Protótipo de funções.
 void deleteAllSMS();
 bool getSMS(Message *receivedSMS);
 void sendActualLocation(char *sendTo);
 bool getAccMove();
 
+//Configuração da comunicação do sim808
 SoftwareSerial fonaSS = SoftwareSerial(FONA_TX, FONA_RX);
 SoftwareSerial *fonaSerial = &fonaSS;
-
 Adafruit_FONA fona = Adafruit_FONA(FONA_RST);
 
+//Variaveis para buffer.
 GPSData location;
 Message msg;
+char txtBuffer[MAX_LENGHT_MSG];
 
-char phoneOwner[] = "+5541991940319";
+// char phoneBuffer[PHONE_DIGITS];
+
+//Constantes da aplição
+char phoneOwner[] = "+5541999999999";
 char linkGmaps[] = "Latitude: %s\nLongitude: %s\nhttp://maps.google.com/maps?q=%s,%s\n";
 char mainMenu[] = "[R]Ativar/Desativar GPS\n[L]Localizar.\n[T(1~9)]Configurar tempo.Ex:T8\n";
 
-char txtBuffer[MAX_LENGHT_MSG];
-char phoneBuffer[PHONE_DIGITS];
-
+//Variaveis e constantes relacionadas a tempo
 const uint16_t oneMinInMillis = 60000;
 unsigned long previousMillis = 0;
 unsigned long currentMillis = 0;
-uint8_t trackingDelayMin = 1;
+uint8_t trackingDelayMin = 10;
 
+//Gatilhos da aplicação.
 bool delayTrigger = 1;
 bool getTrigger = 0;
 bool smsTrigger = 0;
@@ -87,10 +95,8 @@ void setup()
 
   deleteAllSMS();
 
-  //set up the FONA to send a +CMTI notification when an SMS is received
+  // //set up the FONA to send a +CMTI notification when an SMS is received
   fonaSerial->print("AT+CNMI=2,1\r\n");
-
-  Serial.println(F("Setup Finalizado."));
 
   // Inicializa o MPU-6050
   Wire.begin();
@@ -110,6 +116,9 @@ void setup()
   Wire.write(0b00011000); // Trocar esse comando para fundo de escala desejado conforme acima
   Wire.endTransmission();
 
+  Serial.println(F("Setup Finalizado."));
+
+  // Liga led na finalização do setup.
   pinMode(OK_LED, OUTPUT);
   digitalWrite(OK_LED, HIGH);
 }
@@ -173,10 +182,11 @@ void loop()
   };
 
   // Envia localização se solicitado por mensagem.
-  if (smsTrigger)
+  if (smsTrigger || accTrigger)
   {
     sendActualLocation(phoneOwner);
     smsTrigger = 0;
+    accTrigger = 0;
   };
 
   delay(1000);
@@ -191,11 +201,14 @@ void deleteAllSMS()
 
 bool getSMS(Message *sms)
 {
+  //Identifica quantas mensagens há no simcard
   sms->index = fona.getNumSMS();
 
   if (sms->index > 0)
   {
+    //Pega numero do celular e armagena no objeto. Para futura implementação de checagem de numero.
     fona.getSMSSender(sms->index, sms->number, MAX_LENGHT_MSG);
+    //Pega o texto da mensagem e armazena no objeto.
     return fona.readSMS(sms->index, sms->text, MAX_LENGHT_MSG, sms->lenght);
   }
   return false;
@@ -227,28 +240,27 @@ bool getAccMove()
 {
   float AccX, AccY, AccZ, accVector;
 
+  // Solicita os dados ao sensor
   Wire.beginTransmission(MPU);
   Wire.write(0x3B);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU, 14, true); // Solicita os dados ao sensor
+  Wire.requestFrom(MPU, 14, true);
 
   // Armazena o valor dos sensores nas variaveis correspondentes
   AccX = Wire.read() << 8 | Wire.read(); //0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
   AccY = Wire.read() << 8 | Wire.read(); //0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
   AccZ = Wire.read() << 8 | Wire.read(); //0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
 
+  // fundo de escala escolhido:Acelerômetro
+  //       +/-2g = 16384
+  //       +/-4g = 8192
+  //       +/-8g = 4096
+  //       +/-16g = 2048
   AccX /= 2048;
   AccY /= 2048;
   AccZ /= 2048;
   accVector = sqrt(AccX * AccX + AccY * AccY + AccZ * AccZ);
 
-  return accVector > 2 ? 1 : 0;
-  // Imprime na Serial os valores obtidos
-  /* Alterar divisão conforme fundo de escala escolhido:
-      Acelerômetro
-      +/-2g = 16384
-      +/-4g = 8192
-      +/-8g = 4096
-      +/-16g = 2048
-*/
+  //Sensibilade do acelerometro.
+  return accVector > 1.5 ? 1 : 0;
 }
