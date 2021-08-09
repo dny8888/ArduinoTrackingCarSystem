@@ -51,19 +51,19 @@ char txtBuffer[MAX_LENGHT_MSG];
 // char phoneBuffer[PHONE_DIGITS];
 
 //Constantes da aplição
-char phoneOwner[] = "+5541999999999";
+char phoneOwner[] = "+5541991940319";
 char linkGmaps[] = "Latitude: %s\nLongitude: %s\nhttp://maps.google.com/maps?q=%s,%s\n";
 char mainMenu[] = "[R]Ativar/Desativar GPS\n[L]Localizar.\n[T(1~9)]Configurar tempo.Ex:T8\n";
 
 //Variaveis e constantes relacionadas a tempo
-const uint16_t oneMinInMillis = 60000;
+const unsigned long oneMinute = 60000;
 unsigned long previousMillis = 0;
 unsigned long currentMillis = 0;
 uint8_t trackingDelayMin = 10;
 
 //Gatilhos da aplicação.
-bool delayTrigger = 1;
-bool getTrigger = 0;
+bool delayTrigger = 0;
+bool setTrackingTrigger = 0;
 bool smsTrigger = 0;
 bool accTrigger = 0;
 
@@ -128,7 +128,7 @@ void loop()
   currentMillis = millis();
 
   //Verifica se passou intervalo.
-  if (currentMillis - previousMillis >= (trackingDelayMin * oneMinInMillis))
+  if (currentMillis - previousMillis > (trackingDelayMin * oneMinute))
   {
     delayTrigger = 1;
     previousMillis = currentMillis;
@@ -138,7 +138,7 @@ void loop()
   if (getSMS(&msg))
   {
     if (msg.text[0] == 'R')
-      getTrigger = getTrigger == 0 ? 1 : 0;
+      setTrackingTrigger = setTrackingTrigger == 0 ? 1 : 0;
     else if (msg.text[0] == 'L')
       smsTrigger = 1;
     else if (msg.text[0] == 'T')
@@ -155,41 +155,58 @@ void loop()
     accTrigger = 1;
   }
 
-  Serial.print(F("delayTrigger:"));
-  Serial.println(delayTrigger ? "TRUE" : "FALSE");
-  Serial.print(F("getTrigger:"));
-  Serial.println(getTrigger ? "TRUE" : "FALSE");
-  Serial.print(F("smsTrigger:"));
-  Serial.println(smsTrigger ? "TRUE" : "FALSE");
-  Serial.print(F("accTrigger:"));
-  Serial.println(accTrigger ? "TRUE" : "FALSE");
-  Serial.print(F("trackingDelayMin:"));
+  // Serial.print(F("delayTrigger:       "));
+  // Serial.println(delayTrigger ? "TRUE" : "FALSE");
+  // Serial.print(F("setTrackingTrigger: "));
+  // Serial.println(setTrackingTrigger ? "TRUE" : "FALSE");
+  // Serial.print(F("smsTrigger:         "));
+  // Serial.println(smsTrigger ? "TRUE" : "FALSE");
+  // Serial.print(F("accTrigger:         "));
+  // Serial.println(accTrigger ? "TRUE" : "FALSE");
+  // Serial.print(F("trackingDelayMin:   "));
+  // Serial.println(trackingDelayMin);
+  // Serial.print(F("currentMinute:      "));
+  // Serial.println(millis() / oneMinute);
+
+  Serial.print(F("delayTrigger:       "));
+  Serial.println(delayTrigger);
+  Serial.print(F("setTrackingTrigger: "));
+  Serial.println(setTrackingTrigger);
+  Serial.print(F("smsTrigger:         "));
+  Serial.println(smsTrigger);
+  Serial.print(F("accTrigger:         "));
+  Serial.println(accTrigger);
+  Serial.print(F("trackingDelayMin:   "));
   Serial.println(trackingDelayMin);
+  Serial.print(F("currentMinute:      "));
+  Serial.println(currentMillis);
+  Serial.print(F("previusMinute:      "));
+  Serial.println(previousMillis);
 
   //Envia localização se rastreamento está ativo E passou o intervalo
-  if (delayTrigger && getTrigger)
+  if (delayTrigger && setTrackingTrigger)
   {
-    sendActualLocation(phoneOwner);
     delayTrigger = 0;
-  };
+    sendActualLocation(phoneOwner);
+  }
 
   //Envia localização se rastreamento está ativo E houve movimentação
-  if (getTrigger && accTrigger)
+  if (setTrackingTrigger && accTrigger)
   {
     sendActualLocation(phoneOwner);
     accTrigger = 0;
     trackingDelayMin = 1;
-  };
+  }
 
-  // Envia localização se solicitado por mensagem.
+  // Envia localização se solicitado por mensagem OU movimentação.
   if (smsTrigger || accTrigger)
   {
     sendActualLocation(phoneOwner);
     smsTrigger = 0;
     accTrigger = 0;
-  };
+  }
 
-  delay(1000);
+  delay(2000);
 }
 
 void deleteAllSMS()
@@ -259,6 +276,7 @@ bool getAccMove()
   AccX /= 2048;
   AccY /= 2048;
   AccZ /= 2048;
+
   accVector = sqrt(AccX * AccX + AccY * AccY + AccZ * AccZ);
 
   //Sensibilade do acelerometro.
