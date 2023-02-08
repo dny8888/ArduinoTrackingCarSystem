@@ -51,7 +51,7 @@ char txtBuffer[MAX_LENGHT_MSG];
 // char phoneBuffer[PHONE_DIGITS];
 
 //Constantes da aplição
-char phoneOwner[] = "+5541991940319";
+char phoneOwner[] = "+5541999999999";
 char linkGmaps[] = "Latitude: %s\nLongitude: %s\nhttp://maps.google.com/maps?q=%s,%s\n";
 char mainMenu[] = "[R]Ativar/Desativar GPS\n[L]Localizar.\n[T(1~9)]Configurar tempo.Ex:T8\n";
 
